@@ -357,61 +357,94 @@ def main():
     if 'logged_in' not in st.session_state:
         st.session_state.logged_in = False
 
-    with st.sidebar:
-        if not st.session_state.logged_in:
-            st.title("Banking System")
-            login_choice = st.radio("Choose action", ["Login", "Create Account"])
+    if not st.session_state.logged_in:
+        # Center content in the main area instead of sidebar
+        col1, col2, col3 = st.columns([1, 3, 1])
+        
+        with col2:
+            st.title("SecureBank System")
+            st.subheader("Comprehensive Banking Solution")
+            st.write("Secure, reliable banking services for deposits, withdrawals, transfers, loans, and transaction analysis.")
+            
+            st.divider()
+            
+            # Create a clean login/signup selection
+            tabs = st.tabs(["Login", "Create Account"])
+            
+            # Login tab
+            with tabs[0]:
+                with st.container(border=True):
+                    st.subheader("Account Login")
+                    
+                    with st.form("login_form"):
+                        account_no = st.text_input("Account Number").strip().upper()
+                        password = st.text_input("Password", type="password")
+                        submit = st.form_submit_button("Login", use_container_width=True)
 
-            if login_choice == "Create Account":
-                with st.form("create_account_form"):
-                    st.subheader("Create New Account")
-                    name = st.text_input("Full Name")
-                    email = st.text_input("Email Address")
-                    password = st.text_input("Password", type="password")
-                    confirm_password = st.text_input("Confirm Password", type="password")
-                    submit = st.form_submit_button("Create Account")
-
-                    if submit:
-                        if not all([name, email, password, confirm_password]):
-                            st.error("Please fill in all fields")
-                        elif password != confirm_password:
-                            st.error("Passwords do not match")
-                        elif len(password) < 6:
-                            st.error("Password must be at least 6 characters long")
-                        else:
-                            try:
-                                account_no = st.session_state.banking_system.create_account(
-                                    name, password, email
-                                )
-                                st.success(f"""Account created successfully!
-                                    Your account number is: {account_no}
-                                    Please save this number for login.""")
-                            except ValueError as e:
-                                st.error(str(e))
-
-            else:
-                with st.form("login_form"):
-                    st.subheader("Login")
-                    account_no = st.text_input("Account Number").strip().upper()
-                    password = st.text_input("Password", type="password")
-                    submit = st.form_submit_button("Login")
-
-                    if submit:
-                        if not account_no or not password:
-                            st.error("Please fill in all fields")
-                        else:
-                            user = st.session_state.banking_system.validate_login(
-                                account_no, password
-                            )
-                            if user:
-                                st.session_state.logged_in = True
-                                st.session_state.account_no = account_no
-                                st.session_state.user_name = user[1]
-                                st.rerun()
+                        if submit:
+                            if not account_no or not password:
+                                st.error("Please fill in all fields")
                             else:
-                                st.error("Invalid account number or password")
+                                user = st.session_state.banking_system.validate_login(
+                                    account_no, password
+                                )
+                                if user:
+                                    st.session_state.logged_in = True
+                                    st.session_state.account_no = account_no
+                                    st.session_state.user_name = user[1]
+                                    st.rerun()
+                                else:
+                                    st.error("Invalid account number or password")
+                
+                # Forgot account info helper
+                with st.expander("Need help?"):
+                    st.markdown("""
+                    - If you've forgotten your account number, please check your email
+                    - New user? Click on 'Create Account' tab to register
+                    """)
+            
+            # Create Account tab
+            with tabs[1]:
+                with st.container(border=True):
+                    st.subheader("Register New Account")
+                    
+                    with st.form("create_account_form"):
+                        st.markdown("#### Personal Information")
+                        name = st.text_input("Full Name")
+                        email = st.text_input("Email Address")
+                        
+                        st.markdown("#### Security")
+                        password = st.text_input("Password", type="password")
+                        confirm_password = st.text_input("Confirm Password", type="password")
+                        
+                        st.info("Your account number will be generated automatically")
+                        submit = st.form_submit_button("Create Account", use_container_width=True)
 
-        else:
+                        if submit:
+                            if not all([name, email, password, confirm_password]):
+                                st.error("Please fill in all fields")
+                            elif password != confirm_password:
+                                st.error("Passwords do not match")
+                            elif len(password) < 6:
+                                st.error("Password must be at least 6 characters long")
+                            else:
+                                try:
+                                    account_no = st.session_state.banking_system.create_account(
+                                        name, password, email
+                                    )
+                                    st.balloons()
+                                    st.success(f"""Account created successfully!
+                                        
+                                        **Your account number is: {account_no}**
+                                        
+                                        Please save this number for login.""")
+                                except ValueError as e:
+                                    st.error(f"{str(e)}")
+
+    else:
+        # Once logged in, show the logout button in a small header
+        col1, col2 = st.columns([10, 2])
+        with col2:
             st.button("Logout", on_click=lambda: setattr(st.session_state, 'logged_in', False))
 
     if st.session_state.logged_in:
