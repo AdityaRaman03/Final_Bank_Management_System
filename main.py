@@ -17,9 +17,6 @@ logger = logging.getLogger(__name__)
 class BankingSystem:
     def __init__(self):
         self.db_name = "banking.db"
-        # Remove existing database file if it exists
-        if os.path.exists(self.db_name):
-            os.remove(self.db_name)
         self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self.create_tables()
