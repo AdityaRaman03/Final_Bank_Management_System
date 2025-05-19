@@ -1,708 +1,314 @@
-import sqlite3
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import uuid
-import hashlib
-from datetime import datetime, timedelta
-import os
-import logging
-import re
+from Firebase_code import BankingSystem
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+st.set_page_config(page_title="SecureBank System", layout="wide")
 
-class BankingSystem:
-    def __init__(self):
-        self.db_name = "banking.db"
-        self.conn = sqlite3.connect(self.db_name, check_same_thread=False)
-        self.cursor = self.conn.cursor()
-        self.create_tables()
+if 'banking_system' not in st.session_state:
+    st.session_state.banking_system = BankingSystem()
 
-    def validate_email(self, email):
-        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        return re.match(email_pattern, email) is not None
+if 'logged_in' not in st.session_state:
+    st.session_state.logged_in = False
 
-    def create_tables(self):
-        # Accounts table
-        self.cursor.execute('''
-        CREATE TABLE IF NOT EXISTS accounts (
-            account_no TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            password TEXT NOT NULL,
-            balance REAL NOT NULL DEFAULT 0.0,
-            email TEXT UNIQUE NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        ''')
+bs = st.session_state.banking_system
 
-        # Transactions table with recipient_account column
-        self.cursor.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_no TEXT NOT NULL,
-            transaction_type TEXT NOT NULL,
-            amount REAL NOT NULL,
-            category TEXT,
-            recipient_account TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (account_no) REFERENCES accounts(account_no),
-            FOREIGN KEY (recipient_account) REFERENCES accounts(account_no)
-        );
-        ''')
+def login_screen():
+    st.title("SecureBank Login")
+    tabs = st.tabs(["Login", "Create Account"])
 
-        # Loans table
-        self.cursor.execute('''
-        CREATE TABLE IF NOT EXISTS loans (
-            loan_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_no TEXT NOT NULL,
-            amount REAL NOT NULL,
-            interest_rate REAL NOT NULL,
-            term_months INTEGER NOT NULL,
-            monthly_payment REAL NOT NULL,
-            remaining_amount REAL NOT NULL,
-            status TEXT NOT NULL,
-            start_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            next_payment_date TIMESTAMP,
-            FOREIGN KEY (account_no) REFERENCES accounts(account_no)
-        );
-        ''')
+    with tabs[0]:
+        with st.form("login_form"):
+            account_no = st.text_input("Account Number").strip().upper()
+            password = st.text_input("Password", type="password")
+            submit = st.form_submit_button("Login")
 
-        self.conn.commit()
+            if submit:
+                user = bs.validate_login(account_no, password)
+                if user:
+                    st.session_state.logged_in = True
+                    st.session_state.account_no = account_no
+                    st.session_state.user_name = user[1]
+                    st.rerun()
+                else:
+                    st.error("Invalid credentials")
 
-    def hash_password(self, password):
-        return hashlib.sha256(password.encode()).hexdigest()
+    with tabs[1]:
+        with st.form("create_form"):
+            name = st.text_input("Name")
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            confirm = st.text_input("Confirm Password", type="password")
+            submit = st.form_submit_button("Create Account")
 
-    def create_account(self, name, password, email):
-        try:
-            if not self.validate_email(email):
-                raise ValueError("Invalid email format")
+            if submit:
+                if password != confirm:
+                    st.error("Passwords do not match")
+                else:
+                    try:
+                        acc_no = bs.create_account(name, password, email)
+                        st.success(f"Account created! Your account number is: {acc_no}")
+                    except Exception as e:
+                        st.error(str(e))
 
-            account_no = str(uuid.uuid4())[:8].upper()
-            hashed_password = self.hash_password(password)
+def dashboard():
+    st.button("Logout", on_click=lambda: st.session_state.update({"logged_in": False}))
+    name, email, balance, created_at = bs.get_user_details(st.session_state.account_no)
 
-            self.cursor.execute("""
-                INSERT INTO accounts (account_no, name, password, email)
-                VALUES (?, ?, ?, ?);
-            """, (account_no, name, hashed_password, email))
+    st.title(f"Welcome, {name}")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Balance", f"₹{balance:.2f}")
+    col2.metric("Account No", st.session_state.account_no)
+    col3.metric("Since", created_at.split("T")[0])
 
-            self.conn.commit()
-            return account_no
-        except sqlite3.IntegrityError as e:
-            if "UNIQUE constraint failed: accounts.email" in str(e):
-                raise ValueError("Email already registered")
-            raise e
-        except Exception as e:
-            raise ValueError(f"Error creating account: {str(e)}")
+    st.subheader("Banking Services")
+    tabs = st.tabs(["Deposit / Withdraw", "Transfer", "Loans", "History"])
 
-    def validate_login(self, account_no, password):
-        try:
-            hashed_password = self.hash_password(password)
-            self.cursor.execute("""
-                SELECT account_no, name, email, balance
-                FROM accounts
-                WHERE account_no = ? AND password = ?;
-            """, (account_no, hashed_password))
-            return self.cursor.fetchone()
-        except Exception as e:
-            logger.error(f"Login error: {str(e)}")
-            return None
+    # Initialize flags for deposit and withdraw
+    if 'deposit_success' not in st.session_state:
+        st.session_state.deposit_success = False
+    if 'deposit_error' not in st.session_state:
+        st.session_state.deposit_error = ""
 
-    def get_user_details(self, account_no):
-        try:
-            self.cursor.execute("""
-                SELECT name, email, balance, created_at
-                FROM accounts
-                WHERE account_no = ?;
-            """, (account_no,))
-            return self.cursor.fetchone()
-        except Exception as e:
-            logger.error(f"Error fetching user details: {str(e)}")
-            return None
+    if 'withdraw_success' not in st.session_state:
+        st.session_state.withdraw_success = False
+    if 'withdraw_error' not in st.session_state:
+        st.session_state.withdraw_error = ""
 
-    def get_balance(self, account_no):
-        try:
-            self.cursor.execute("SELECT balance FROM accounts WHERE account_no = ?;", (account_no,))
-            result = self.cursor.fetchone()
-            return result[0] if result else 0.0
-        except Exception as e:
-            logger.error(f"Error fetching balance: {str(e)}")
-            return 0.0
+    if 'transfer_success' not in st.session_state:
+        st.session_state.transfer_success = False
+    if 'transfer_error' not in st.session_state:
+        st.session_state.transfer_error = ""
 
-    def record_transaction(self, account_no, transaction_type, amount, category, recipient_account=None):
-        try:
-            self.cursor.execute("BEGIN TRANSACTION")
+    if 'loan_success' not in st.session_state:
+        st.session_state.loan_success = False
+    if 'loan_error' not in st.session_state:
+        st.session_state.loan_error = ""
 
-            # Check balance for withdrawals
-            if transaction_type == "withdraw":
-                current_balance = self.get_balance(account_no)
-                if amount > current_balance:
-                    self.cursor.execute("ROLLBACK")
-                    return False
+    # For dynamic loan payment flags, use a dictionary
+    if 'loan_pay_success' not in st.session_state:
+        st.session_state.loan_pay_success = {}
+    if 'loan_pay_error' not in st.session_state:
+        st.session_state.loan_pay_error = {}
 
-            # Insert transaction record
-            self.cursor.execute("""
-                INSERT INTO transactions (account_no, transaction_type, amount, category, recipient_account)
-                VALUES (?, ?, ?, ?, ?);
-            """, (account_no, transaction_type, amount, category, recipient_account))
+    with tabs[0]:
+        col1, col2 = st.columns(2)
 
-            # Update account balance
-            if transaction_type == "deposit":
-                self.cursor.execute("""
-                    UPDATE accounts 
-                    SET balance = balance + ? 
-                    WHERE account_no = ?;
-                """, (amount, account_no))
-            elif transaction_type == "withdraw":
-                self.cursor.execute("""
-                    UPDATE accounts 
-                    SET balance = balance - ? 
-                    WHERE account_no = ?;
-                """, (amount, account_no))
+        # Deposit form
+        with col1.form("deposit_form"):
+            amt = st.number_input("Deposit ₹", min_value=0.01)
+            cat = st.selectbox("Category", ["Salary", "Other"])
+            if st.form_submit_button("Deposit"):
+                if bs.record_transaction(st.session_state.account_no, "deposit", amt, cat):
+                    st.session_state.deposit_success = True
+                    st.session_state.deposit_error = ""
+                    st.rerun()
+                else:
+                    st.session_state.deposit_error = "Deposit failed"
+                    st.session_state.deposit_success = False
+                    st.rerun()
 
-            self.cursor.execute("COMMIT")
-            return True
-        except Exception as e:
-            self.cursor.execute("ROLLBACK")
-            logger.error(f"Transaction error: {str(e)}")
-            return False
+        if st.session_state.deposit_success:
+            st.success("Deposit successful")
+            st.session_state.deposit_success = False
+        if st.session_state.deposit_error:
+            st.error(st.session_state.deposit_error)
+            st.session_state.deposit_error = ""
 
-    def transfer_money(self, from_account, to_account, amount):
-        try:
-            # Verify recipient account exists
-            self.cursor.execute("SELECT account_no FROM accounts WHERE account_no = ?", (to_account,))
-            if not self.cursor.fetchone():
-                return False, "Recipient account not found"
+        # Withdraw form
+        with col2.form("withdraw_form"):
+            amt = st.number_input("Withdraw ₹", min_value=0.01)
+            cat = st.selectbox("Category", ["Bills", "Shopping"])
+            if st.form_submit_button("Withdraw"):
+                if bs.record_transaction(st.session_state.account_no, "withdraw", amt, cat):
+                    st.session_state.withdraw_success = True
+                    st.session_state.withdraw_error = ""
+                    st.rerun()
+                else:
+                    st.session_state.withdraw_error = "Insufficient funds"
+                    st.session_state.withdraw_success = False
+                    st.rerun()
 
-            # Check sender's balance
-            sender_balance = self.get_balance(from_account)
-            if amount > sender_balance:
-                return False, "Insufficient funds"
+        if st.session_state.withdraw_success:
+            st.success("Withdraw successful")
+            st.session_state.withdraw_success = False
+        if st.session_state.withdraw_error:
+            st.error(st.session_state.withdraw_error)
+            st.session_state.withdraw_error = ""
 
-            self.cursor.execute("BEGIN TRANSACTION")
+    with tabs[1]:
+        with st.form("transfer_form"):
+            to_acc = st.text_input("To Account No").strip().upper()
+            amt = st.number_input("Amount ₹", min_value=0.01)
+            if st.form_submit_button("Transfer"):
+                success, msg = bs.transfer_money(st.session_state.account_no, to_acc, amt)
+                if success:
+                    st.session_state.transfer_success = True
+                    st.session_state.transfer_error = ""
+                else:
+                    st.session_state.transfer_error = msg
+                    st.session_state.transfer_success = False
+                st.rerun()
 
-            # Deduct from sender
-            self.cursor.execute("""
-                UPDATE accounts 
-                SET balance = balance - ? 
-                WHERE account_no = ?;
-            """, (amount, from_account))
+        if st.session_state.transfer_success:
+            st.success("Transfer successful")
+            st.session_state.transfer_success = False
+        if st.session_state.transfer_error:
+            st.error(st.session_state.transfer_error)
+            st.session_state.transfer_error = ""
 
-            # Add to recipient
-            self.cursor.execute("""
-                UPDATE accounts 
-                SET balance = balance + ? 
-                WHERE account_no = ?;
-            """, (amount, to_account))
+    with tabs[2]:
+        col1, col2 = st.columns(2)
 
-            # Record transfer transactions
-            self.cursor.execute("""
-                INSERT INTO transactions (account_no, transaction_type, amount, category, recipient_account)
-                VALUES (?, 'transfer_out', ?, 'Transfer', ?);
-            """, (from_account, amount, to_account))
+        with col1.form("loan_form"):
+            amt = st.number_input("Loan Amount ₹", min_value=1000.0)
+            months = st.selectbox("Term (months)", [12, 24, 36])
+            rate = st.slider("Interest %", min_value=5.0, max_value=15.0, value=10.0)
+            if st.form_submit_button("Apply"):
+                success, msg = bs.apply_for_loan(st.session_state.account_no, amt, months, rate)
+                if success:
+                    st.session_state.loan_success = True
+                    st.session_state.loan_error = ""
+                else:
+                    st.session_state.loan_error = msg
+                    st.session_state.loan_success = False
+                st.rerun()
 
-            self.cursor.execute("""
-                INSERT INTO transactions (account_no, transaction_type, amount, category, recipient_account)
-                VALUES (?, 'transfer_in', ?, 'Transfer', ?);
-            """, (to_account, amount, from_account))
+        if st.session_state.loan_success:
+            st.success("Loan application successful")
+            st.session_state.loan_success = False
+        if st.session_state.loan_error:
+            st.error(st.session_state.loan_error)
+            st.session_state.loan_error = ""
 
-            self.cursor.execute("COMMIT")
-            return True, "Transfer successful"
+        with col2:
+            loans = bs.get_active_loans(st.session_state.account_no)
+            for loan in loans:
+                with st.expander(f"Loan ₹{loan['amount']}"):
+                    st.write(f"Monthly: ₹{loan['monthly_payment']:.2f}")
+                    st.write(f"Remaining: ₹{loan['remaining_amount']:.2f}")
 
-        except Exception as e:
-            self.cursor.execute("ROLLBACK")
-            logger.error(f"Transfer error: {str(e)}")
-            return False, f"Transfer failed: {str(e)}"
+                    form_key = f"pay_loan_{loan['loan_id']}"
+                    with st.form(form_key):
+                        pay_amt = st.number_input(
+                            "Pay Amount ₹",
+                            min_value=0.01,
+                            max_value=loan["remaining_amount"],
+                            key=f"pay_amt_{loan['loan_id']}"
+                        )
+                        if st.form_submit_button("Pay"):
+                            success, msg = bs.make_loan_payment(loan["loan_id"], pay_amt)
+                            # Store flags in dict by loan_id
+                            st.session_state.loan_pay_success[loan['loan_id']] = success
+                            if not success:
+                                st.session_state.loan_pay_error[loan['loan_id']] = msg
+                            else:
+                                st.session_state.loan_pay_error[loan['loan_id']] = ""
+                            st.rerun()
 
-    def apply_for_loan(self, account_no, amount, term_months, interest_rate):
-        try:
-            # Calculate monthly payment using simple interest
-            total_interest = (amount * interest_rate * term_months) / (12 * 100)
-            total_amount = amount + total_interest
-            monthly_payment = total_amount / term_months
+                    # Show messages for each loan payment
+                    if st.session_state.loan_pay_success.get(loan['loan_id'], False):
+                        st.success("Loan payment successful")
+                        st.session_state.loan_pay_success[loan['loan_id']] = False
+                    if st.session_state.loan_pay_error.get(loan['loan_id'], ""):
+                        st.error(st.session_state.loan_pay_error[loan['loan_id']])
+                        st.session_state.loan_pay_error[loan['loan_id']] = ""
 
-            # Set next payment date
-            next_payment_date = datetime.now() + timedelta(days=30)
-
-            self.cursor.execute("""
-                INSERT INTO loans (
-                    account_no, amount, interest_rate, term_months, 
-                    monthly_payment, remaining_amount, status, next_payment_date
-                )
-                VALUES (?, ?, ?, ?, ?, ?, 'active', ?);
-            """, (account_no, amount, interest_rate, term_months, 
-                  monthly_payment, total_amount, next_payment_date))
-
-            # Add loan amount to account balance
-            self.cursor.execute("""
-                UPDATE accounts 
-                SET balance = balance + ? 
-                WHERE account_no = ?;
-            """, (amount, account_no))
-
-            # Record loan disbursement as a transaction
-            self.cursor.execute("""
-                INSERT INTO transactions (account_no, transaction_type, amount, category)
-                VALUES (?, 'loan_disbursement', ?, 'Loan');
-            """, (account_no, amount))
-
-            self.conn.commit()
-            return True, "Loan approved"
-
-        except Exception as e:
-            self.conn.rollback()
-            logger.error(f"Loan application error: {str(e)}")
-            return False, f"Loan application failed: {str(e)}"
-
-    def get_active_loans(self, account_no):
-        try:
-            self.cursor.execute("""
-                SELECT loan_id, amount, interest_rate, term_months, 
-                       monthly_payment, remaining_amount, start_date, 
-                       next_payment_date
-                FROM loans
-                WHERE account_no = ? AND status = 'active'
-                ORDER BY start_date DESC;
-            """, (account_no,))
-            return self.cursor.fetchall()
-        except Exception as e:
-            logger.error(f"Error fetching loans: {str(e)}")
-            return []
-
-    def make_loan_payment(self, loan_id, payment_amount):
-        try:
-            self.cursor.execute("BEGIN TRANSACTION")
-
-            # Get loan details
-            self.cursor.execute("""
-                SELECT account_no, remaining_amount, monthly_payment
-                FROM loans
-                WHERE loan_id = ? AND status = 'active';
-            """, (loan_id,))
-            loan_data = self.cursor.fetchone()
-
-            if not loan_data:
-                self.cursor.execute("ROLLBACK")
-                return False, "Loan not found or inactive"
-
-            account_no, remaining_amount, monthly_payment = loan_data
-
-            # Check if account has sufficient balance
-            balance = self.get_balance(account_no)
-            if balance < payment_amount:
-                self.cursor.execute("ROLLBACK")
-                return False, "Insufficient funds"
-
-            # Update loan remaining amount
-            new_remaining = remaining_amount - payment_amount
-            next_payment_date = datetime.now() + timedelta(days=30)
-
-            self.cursor.execute("""
-                UPDATE loans
-                SET remaining_amount = ?,
-                    next_payment_date = ?,
-                    status = CASE 
-                        WHEN remaining_amount - ? <= 0 THEN 'completed'
-                        ELSE 'active'
-                    END
-                WHERE loan_id = ?;
-            """, (new_remaining, next_payment_date, payment_amount, loan_id))
-
-            # Deduct payment from account balance
-            self.cursor.execute("""
-                UPDATE accounts
-                SET balance = balance - ?
-                WHERE account_no = ?;
-            """, (payment_amount, account_no))
-
-            # Record payment transaction
-            self.cursor.execute("""
-                INSERT INTO transactions (account_no, transaction_type, amount, category)
-                VALUES (?, 'loan_payment', ?, 'Loan Payment');
-            """, (account_no, payment_amount))
-
-            self.cursor.execute("COMMIT")
-            return True, "Payment successful"
-
-        except Exception as e:
-            self.cursor.execute("ROLLBACK")
-            logger.error(f"Loan payment error: {str(e)}")
-            return False, f"Payment failed: {str(e)}"
-
-    def get_transaction_history(self, account_no):
-        try:
-            self.cursor.execute("""
-                SELECT transaction_type, amount, timestamp, category,
-                       recipient_account
-                FROM transactions
-                WHERE account_no = ?
-                ORDER BY timestamp DESC;
-            """, (account_no,))
-            return self.cursor.fetchall()
-        except Exception as e:
-            logger.error(f"Error fetching transactions: {str(e)}")
-            return []
-
-def main():
-    st.set_page_config(page_title="Banking System", layout="wide")
-
-    if 'banking_system' not in st.session_state:
-        st.session_state.banking_system = BankingSystem()
-
-    if 'logged_in' not in st.session_state:
-        st.session_state.logged_in = False
-
-    if not st.session_state.logged_in:
-        # Center content in the main area instead of sidebar
-        col1, col2, col3 = st.columns([1, 3, 1])
+    with tabs[3]:
+        transactions = bs.get_transaction_history(st.session_state.account_no)
         
-        with col2:
-            st.title("SecureBank System")
-            st.subheader("Comprehensive Banking Solution")
-            st.write("Secure, reliable banking services for deposits, withdrawals, transfers, loans, and transaction analysis.")
+        if transactions:
+            df = pd.DataFrame(transactions)
+
+            # Convert timestamp string to datetime UTC
+            df['Timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
             
-            st.divider()
-            
-            # Create a clean login/signup selection
-            tabs = st.tabs(["Login", "Create Account"])
-            
-            # Login tab
-            with tabs[0]:
-                with st.container(border=True):
-                    st.subheader("Account Login")
-                    
-                    with st.form("login_form"):
-                        account_no = st.text_input("Account Number").strip().upper()
-                        password = st.text_input("Password", type="password")
-                        submit = st.form_submit_button("Login", use_container_width=True)
+            df.rename(columns={
+                "transaction_type": "Type",
+                "amount": "Amount",
+                "category": "Category",
+                "recipient_account": "Transfer Account"
+            }, inplace=True)
 
-                        if submit:
-                            if not account_no or not password:
-                                st.error("Please fill in all fields")
-                            else:
-                                user = st.session_state.banking_system.validate_login(
-                                    account_no, password
-                                )
-                                if user:
-                                    st.session_state.logged_in = True
-                                    st.session_state.account_no = account_no
-                                    st.session_state.user_name = user[1]
-                                    st.rerun()
-                                else:
-                                    st.error("Invalid account number or password")
-                
-                # Forgot account info helper
-                with st.expander("Need help?"):
-                    st.markdown("""
-                    - If you've forgotten your account number, please check your email
-                    - New user? Click on 'Create Account' tab to register
-                    """)
-            
-            # Create Account tab
-            with tabs[1]:
-                with st.container(border=True):
-                    st.subheader("Register New Account")
-                    
-                    with st.form("create_account_form"):
-                        st.markdown("#### Personal Information")
-                        name = st.text_input("Full Name")
-                        email = st.text_input("Email Address")
-                        
-                        st.markdown("#### Security")
-                        password = st.text_input("Password", type="password")
-                        confirm_password = st.text_input("Confirm Password", type="password")
-                        
-                        st.info("Your account number will be generated automatically")
-                        submit = st.form_submit_button("Create Account", use_container_width=True)
-
-                        if submit:
-                            if not all([name, email, password, confirm_password]):
-                                st.error("Please fill in all fields")
-                            elif password != confirm_password:
-                                st.error("Passwords do not match")
-                            elif len(password) < 6:
-                                st.error("Password must be at least 6 characters long")
-                            else:
-                                try:
-                                    account_no = st.session_state.banking_system.create_account(
-                                        name, password, email
-                                    )
-                                    st.balloons()
-                                    st.success(f"""Account created successfully!
-                                        
-                                        **Your account number is: {account_no}**
-                                        
-                                        Please save this number for login.""")
-                                except ValueError as e:
-                                    st.error(f"{str(e)}")
-
-    else:
-        # Once logged in, show the logout button in a small header
-        col1, col2 = st.columns([10, 2])
-        with col2:
-            st.button("Logout", on_click=lambda: setattr(st.session_state, 'logged_in', False))
-
-    if st.session_state.logged_in:
-        user_details = st.session_state.banking_system.get_user_details(st.session_state.account_no)
-
-        if user_details:
-            name, email, balance, created_at = user_details
-
-            st.title(f"Welcome, {name}!")
-
-            # Key metrics
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Current Balance", f"₹{balance:.2f}")
-            with col2:
-                st.metric("Account Number", st.session_state.account_no)
-            with col3:
-                st.metric("Member Since", created_at.split()[0])
-
-            # Transaction section with tabs
-            st.subheader("Banking Services")
-            tabs = st.tabs([
-                "Deposit/Withdraw", 
-                "Transfer Money", 
-                "Loans", 
-                "Transaction History"
+            tab1, tab2, tab3 = st.tabs([
+                "Transaction History",
+                "Category Analysis",
+                "Monthly Trends"
             ])
 
-            # Deposit/Withdraw tab
-            with tabs[0]:
-                col1, col2 = st.columns(2)
+            with tab1:
+                st.dataframe(df.drop(columns=["Timestamp"], errors='ignore'))
 
-                # Deposit form
-                with col1:
-                    with st.form("deposit_form"):
-                        st.write("Deposit Money")
-                        deposit_amount = st.number_input(
-                            "Amount (₹)", 
-                            min_value=0.01, 
-                            step=0.01,
-                            key="deposit_amount"
-                        )
-                        deposit_category = st.selectbox(
-                            "Category",
-                            ["Salary", "Investment", "Transfer", "Other"],
-                            key="deposit_category"
-                        )
-                        deposit_submit = st.form_submit_button("Deposit")
+            with tab2:
+                expenses_by_category = df[df['Type'] == 'withdraw'].groupby('Category')['Amount'].sum()
 
-                        if deposit_submit:
-                            if st.session_state.banking_system.record_transaction(
-                                st.session_state.account_no,
-                                "deposit",
-                                deposit_amount,
-                                deposit_category
-                            ):
-                                st.success(f"Successfully deposited ₹{deposit_amount:.2f}")
-                                st.rerun()
-                            else:
-                                st.error("Failed to process deposit")
-
-                # Withdraw form
-                with col2:
-                    with st.form("withdraw_form"):
-                        st.write("Withdraw Money")
-                        withdraw_amount = st.number_input(
-                            "Amount (₹)", 
-                            min_value=0.01, 
-                            step=0.01,
-                            key="withdraw_amount"
-                        )
-                        withdraw_category = st.selectbox(
-                            "Category",
-                            ["Food", "Transport", "Bills", "Shopping", "Entertainment", "Other"],
-                            key="withdraw_category"
-                        )
-                        withdraw_submit = st.form_submit_button("Withdraw")
-
-                        if withdraw_submit:
-                            if withdraw_amount > balance:
-                                st.error("Insufficient funds")
-                            else:
-                                if st.session_state.banking_system.record_transaction(
-                                    st.session_state.account_no,
-                                    "withdraw",
-                                    withdraw_amount,
-                                    withdraw_category
-                                ):
-                                    st.success(f"Successfully withdrew ₹{withdraw_amount:.2f}")
-                                    st.rerun()
-                                else:
-                                    st.error("Failed to process withdrawal")
-
-            # Transfer Money tab
-            with tabs[1]:
-                with st.form("transfer_form"):
-                    st.write("Transfer Money")
-                    recipient_account = st.text_input(
-                        "Recipient Account Number"
-                    ).strip().upper()
-                    transfer_amount = st.number_input(
-                        "Amount (₹)", 
-                        min_value=0.01, 
-                        step=0.01
+                if not expenses_by_category.empty:
+                    fig = px.pie(
+                        values=expenses_by_category.values,
+                        names=expenses_by_category.index,
+                        title='Expenses by Category'
                     )
-                    transfer_submit = st.form_submit_button("Transfer")
-
-                    if transfer_submit:
-                        if transfer_amount > balance:
-                            st.error("Insufficient funds")
-                        else:
-                            success, message = st.session_state.banking_system.transfer_money(
-                                st.session_state.account_no,
-                                recipient_account,
-                                transfer_amount
-                            )
-                            if success:
-                                st.success(message)
-                                st.rerun()
-                            else:
-                                st.error(message)
-
-            # Loans tab
-            with tabs[2]:
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.subheader("Apply for Loan")
-                    with st.form("loan_application"):
-                        loan_amount = st.number_input(
-                            "Loan Amount (₹)", 
-                            min_value=1000.0, 
-                            step=1000.0
-                        )
-                        loan_term = st.selectbox(
-                            "Loan Term (months)",
-                            [12, 24, 36, 48, 60]
-                        )
-                        interest_rate = st.number_input(
-                            "Interest Rate (%)",
-                            min_value=5.0,
-                            max_value=15.0,
-                            value=10.0,
-                            step=0.1
-                        )
-                        loan_submit = st.form_submit_button("Apply")
-
-                        if loan_submit:
-                            success, message = st.session_state.banking_system.apply_for_loan(
-                                st.session_state.account_no,
-                                loan_amount,
-                                loan_term,
-                                interest_rate
-                            )
-                            if success:
-                                st.success(message)
-                                st.rerun()
-                            else:
-                                st.error(message)
-
-                with col2:
-                    st.subheader("Active Loans")
-                    active_loans = st.session_state.banking_system.get_active_loans(
-                        st.session_state.account_no
-                    )
-
-                    if active_loans:
-                        for loan in active_loans:
-                            with st.expander(f"Loan #{loan[0]} - ₹{loan[1]:,.2f}"):
-                                st.write(f"Interest Rate: {loan[2]}%")
-                                st.write(f"Term: {loan[3]} months")
-                                st.write(f"Monthly Payment: ₹{loan[4]:,.2f}")
-                                st.write(f"Remaining Amount: ₹{loan[5]:,.2f}")
-                                st.write(f"Next Payment Date: {loan[7]}")
-
-                                with st.form(f"loanpayment{loan[0]}"):
-                                    payment_amount = st.number_input(
-                                        "Payment Amount (₹)",
-                                        min_value=0.01,
-                                        max_value=float(loan[5]),
-                                        value=float(loan[4]),
-                                        step=0.01
-                                    )
-                                    if st.form_submit_button("Make Payment"):
-                                        success, message = st.session_state.banking_system.make_loan_payment(
-                                            loan[0],
-                                            payment_amount
-                                        )
-                                        if success:
-                                            st.success(message)
-                                            st.rerun()
-                                        else:
-                                            st.error(message)
-                    else:
-                        st.info("No active loans")
-
-            # Transaction History tab
-            with tabs[3]:
-                transactions = st.session_state.banking_system.get_transaction_history(
-                    st.session_state.account_no
-                )
-
-                if transactions:
-                    df = pd.DataFrame(
-                        transactions,
-                        columns=['Type', 'Amount', 'Timestamp', 'Category', 'Transfer Account']
-                    )
-
-                    tab1, tab2, tab3 = st.tabs([
-                        "Transaction History",
-                        "Category Analysis",
-                        "Monthly Trends"
-                    ])
-
-                    with tab1:
-                        st.dataframe(df)
-
-                    with tab2:
-                        expenses_by_category = df[
-                            df['Type'] == 'withdraw'
-                        ].groupby('Category')['Amount'].sum()
-
-                        if not expenses_by_category.empty:
-                            fig = px.pie(
-                                values=expenses_by_category.values,
-                                names=expenses_by_category.index,
-                                title='Expenses by Category'
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.info("No expense data available yet")
-
-                    with tab3:
-                        df['Month'] = pd.to_datetime(df['Timestamp']).dt.strftime('%Y-%m')
-                        monthly_summary = df.groupby(['Month', 'Type'])['Amount'].sum().unstack()
-
-                        if not monthly_summary.empty:
-                            fig = go.Figure()
-                            if 'deposit' in monthly_summary.columns:
-                                fig.add_trace(go.Bar(
-                                    x=monthly_summary.index,
-                                    y=monthly_summary['deposit'],
-                                    name='Deposits',
-                                    marker_color='green'
-                                ))
-                            if 'withdraw' in monthly_summary.columns:
-                                fig.add_trace(go.Bar(
-                                    x=monthly_summary.index,
-                                    y=monthly_summary['withdraw'],
-                                    name='Withdrawals',
-                                    marker_color='red'
-                                ))
-                            fig.update_layout(
-                                title='Monthly Transaction Summary',
-                                barmode='group'
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                        else:
-                            st.info("No monthly trend data available yet")
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
-                    st.info("No transactions recorded yet")
+                    st.info("No expense data available yet")
+
+            with tab3:
+                # Parse timestamp
+                df['Timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+                df = df.dropna(subset=['Timestamp'])  # remove rows with invalid dates
+
+                # Normalize and map transaction types
+                df['Type'] = df['Type'].str.lower()
+                df['Type'] = df['Type'].replace({
+                    'loan_disbursement': 'deposit',
+                    'loan_payment': 'withdraw'
+                })
+
+                # Extract month
+                df['Month'] = df['Timestamp'].dt.strftime('%Y-%m')
+
+                # Group and summarize
+                monthly_summary = df.groupby(['Month', 'Type'])['Amount'].sum().unstack(fill_value=0)
+
+                if not monthly_summary.empty:
+                    fig = go.Figure()
+
+                    if 'deposit' in monthly_summary.columns:
+                        fig.add_trace(go.Bar(
+                            x=monthly_summary.index,
+                            y=monthly_summary['deposit'],
+                            name='Deposits',
+                            marker_color='green'
+                        ))
+
+                    if 'withdraw' in monthly_summary.columns:
+                        fig.add_trace(go.Bar(
+                            x=monthly_summary.index,
+                            y=monthly_summary['withdraw'],
+                            name='Withdrawals',
+                            marker_color='red'
+                        ))
+
+                    fig.update_layout(
+                        title='Monthly Transaction Summary',
+                        xaxis_title='Month',
+                        yaxis_title='Amount',
+                        barmode='group'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No monthly trend data available yet")
+
+
+
+        else:
+            st.info("No transactions found.")
+
+
 
 if __name__ == "__main__":
-    main()
+    if not st.session_state.logged_in:
+        login_screen()
+    else:
+        dashboard()

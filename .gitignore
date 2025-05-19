@@ -1,4 +1,18 @@
-*.db
+# Ignore Python cache and virtual environment files
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Ignore environment and system files
 .env
 .DS_Store
+
+# Ignore Streamlit secrets
+.streamlit/secrets.toml
+
+# Ignore VS Code and IDE settings (optional, if using VS Code or PyCharm)
+.vscode/
+.idea/
