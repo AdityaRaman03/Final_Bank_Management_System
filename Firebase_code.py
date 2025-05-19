@@ -16,6 +16,7 @@ class BankingSystem:
     def __init__(self):
         if not firebase_admin._apps:
             cred_dict = json.loads(st.secrets["GOOGLE_CREDENTIALS"])
+            cred_dict["private_key"] = cred_dict["private_key"].replace("\\n", "\n")
             cred = credentials.Certificate(cred_dict)
             firebase_admin.initialize_app(cred)
         self.db = firestore.client()
