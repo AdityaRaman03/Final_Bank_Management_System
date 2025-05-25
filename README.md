@@ -6,7 +6,11 @@ Clone the repo using the command below.
 You can get the path from the repo itself. Install the requirements.
 Then run the program in your terminal.
 
-    pip install requirements.txt
     git clone https://github.com/KaRaNNK0710/Final_Bank_Management_System.git
+
+    
+    pip install requirements.txt
+
+    
     streamlit run main.py
 
